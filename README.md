@@ -74,12 +74,15 @@ While it runs: **q** quit · **r** restart server · **a** change access · **o*
 
 Choose a mode in the launcher, or pass `--access`:
 
-| Mode         | Who can connect      | Notes                                                    |
-| ------------ | -------------------- | -------------------------------------------------------- |
-| `local`      | This machine         | `127.0.0.1`; bring your own tunnel to port 8787          |
-| `lan`        | Your local network   | Plain http                                               |
-| `cloudflare` | Anyone with the link | Free https quick tunnel, no account; needs `cloudflared` |
-| `tailscale`  | Your tailnet         | Tailscale address only                                   |
+| Mode         | Who can connect      | Notes                                                      |
+| ------------ | -------------------- | ---------------------------------------------------------- |
+| `local`      | This machine         | `127.0.0.1`; bring your own tunnel to port 8787            |
+| `lan`        | Your local network   | Plain http                                                 |
+| `cloudflare` | Anyone with the link | Free https quick tunnel, no account; needs `cloudflared`   |
+| `tailscale`  | Your tailnet         | Plain http on the tailnet address                          |
+| `serve`      | Your tailnet         | https at the tailnet name; needs `tailscale` 1.52 or newer |
+
+`serve` needs the `tailscale` command on your `PATH`, signed in, with MagicDNS and HTTPS certificates enabled in the tailnet. It serves port 443 at the machine's tailnet name and takes its mount down when the launcher quits; a server restart keeps the address. Without the command the launcher stops with an install hint instead of falling back to this device only. For another tunnel (ngrok), choose `local` and point it at port 8787.
 
 Other options: `--port` (8787), `--cwd`, `--data` (`~/.pi-pocket`), `--host`, and `-y` to reuse the last access choice. `npm start -- --help` lists them all. `PI_POCKET_BROWSER` and `PI_POCKET_BROWSER_ARGS` pick the built-in browser and its flags when Chromium or Chrome is not found by itself. `PI_POCKET_PROMPT_DATE=1` puts today's date in Pi's system prompt; it is left out by default, so the prompt cache does not start over when the date changes. `PI_POCKET_CACHE_KEEPER=off` turns off the prompt cache keeper, which keeps a model's prompt cache warm while a run waits on a tool call ([features](docs/features.md)).
 
