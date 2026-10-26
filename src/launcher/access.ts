@@ -1,4 +1,5 @@
-// How other devices reach Pi Pocket: this device only, the local network, a Cloudflare quick tunnel, or Tailscale.
+// How other devices reach Pi Pocket: this device only, the local network, a Cloudflare quick tunnel,
+// Tailscale, or Tailscale Serve.
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import {
@@ -15,14 +16,21 @@ import { networkInterfaces } from "node:os";
 import { delimiter, join } from "node:path";
 import { createInterface } from "node:readline";
 
-export type AccessMode = "local" | "lan" | "cloudflare" | "tailscale";
-export const ACCESS_MODES: readonly AccessMode[] = ["local", "lan", "cloudflare", "tailscale"];
+export type AccessMode = "local" | "lan" | "cloudflare" | "tailscale" | "serve";
+export const ACCESS_MODES: readonly AccessMode[] = [
+    "local",
+    "lan",
+    "cloudflare",
+    "tailscale",
+    "serve",
+];
 
 export const ACCESS_LABELS: Record<AccessMode, string> = {
     local: "This device only",
     lan: "Local network",
     cloudflare: "Cloudflare Tunnel",
     tailscale: "Tailscale",
+    serve: "Tailscale Serve",
 };
 
 export function isAccessMode(value: string | undefined): value is AccessMode {
@@ -70,6 +78,11 @@ export function bindHost(mode: AccessMode): string {
 
     if (mode === "tailscale") {
         return tailscaleAddress() ?? "127.0.0.1";
+    }
+
+    if (mode === "serve") {
+        // tailscaled proxies the tailnet to loopback, so nothing here binds the tailnet address as Tailscale mode does.
+        return "127.0.0.1";
     }
 
     return "127.0.0.1";
@@ -154,6 +167,54 @@ function findExecutable(name: string, extraDirectories: string[]): string | unde
 /** cloudflared from PATH, or the copy the launcher downloaded into the data folder. */
 export function findCloudflared(dataDir: string): string | undefined {
     return findExecutable("cloudflared", [join(dataDir, "bin")]);
+}
+
+// ─── Tailscale Serve ────────────────────────────────────────────────────
+
+/**
+ * tailscale from PATH. Pi Pocket neither ships nor downloads Tailscale, so it has to be installed already, and only
+ * PATH is searched: the data folder never holds a copy.
+ */
+export function findTailscale(): string | undefined {
+    return findExecutable("tailscale", []);
+}
+
+export const TAILSCALE_MISSING_MESSAGE =
+    'Tailscale Serve needs the tailscale command, and it is not on PATH.\nInstall it: macOS "brew install tailscale" or the App Store app · Linux "curl -fsSL https://tailscale.com/install.sh | sh" · Windows "winget install Tailscale.Tailscale".\nOr pick another access mode: --access local|lan|cloudflare|tailscale.';
+
+/**
+ * Whether the start has to stop because `serve` needs the missing tailscale and nobody is there to choose another
+ * mode: `--access serve` or PI_POCKET_ACCESS asked for it, or it is the saved choice and no terminal can ask. It never
+ * falls back to `local` on its own, because the user would believe they are on their tailnet while they are not, and it
+ * leaves the saved choice alone so the next start works once Tailscale is installed.
+ */
+export function serveWithoutTailscale(request: {
+    given: AccessMode | undefined;
+    saved: AccessMode | undefined;
+    ask: boolean;
+}): boolean {
+    if (request.given === "serve") {
+        return true;
+    }
+
+    return request.given === undefined && request.saved === "serve" && !request.ask;
+}
+
+/**
+ * Whether the start stops for the missing `serve` tailscale, `--host` aside. `--host` means the launcher listens where
+ * it is told and never uses serve, so a saved serve choice must not refuse to start there; an explicit `--access serve`
+ * still wins and still bails out.
+ */
+export function serveBailOut(request: {
+    access: AccessMode | undefined;
+    saved: AccessMode | undefined;
+    host: string | undefined;
+    ask: boolean;
+}): boolean {
+    return (
+        (request.access === "serve" || request.host === undefined) &&
+        serveWithoutTailscale({ given: request.access, saved: request.saved, ask: request.ask })
+    );
 }
 
 /** Where to get cloudflared on this platform: a release binary the launcher can download, or how to install it. */
