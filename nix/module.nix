@@ -68,11 +68,15 @@ in
         "lan"
         "cloudflare"
         "tailscale"
+        "serve"
       ];
       default = "local";
       description = ''
-        Access mode: loopback only, LAN, a Cloudflare quick tunnel, or Tailscale.
+        Access mode: loopback only, LAN, a Cloudflare quick tunnel, Tailscale, or Tailscale Serve.
         Tailscale mode requires Tailscale to be connected separately.
+        Serve needs pkgs.tailscale in extraPackages (the module does not add it), HTTPS
+        certificates enabled in the tailnet, and either root or
+        `sudo tailscale set --operator=<service user>`.
       '';
     };
 
