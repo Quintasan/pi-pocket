@@ -16,13 +16,13 @@ import { networkInterfaces } from "node:os";
 import { delimiter, join } from "node:path";
 import { createInterface } from "node:readline";
 
-export type AccessMode = "local" | "lan" | "cloudflare" | "tailscale" | "serve";
+export type AccessMode = "local" | "lan" | "cloudflare" | "tailscale" | "tailscale-serve";
 export const ACCESS_MODES: readonly AccessMode[] = [
     "local",
     "lan",
     "cloudflare",
     "tailscale",
-    "serve",
+    "tailscale-serve",
 ];
 
 export const ACCESS_LABELS: Record<AccessMode, string> = {
@@ -30,7 +30,7 @@ export const ACCESS_LABELS: Record<AccessMode, string> = {
     lan: "Local network",
     cloudflare: "Cloudflare Tunnel",
     tailscale: "Tailscale",
-    serve: "Tailscale Serve",
+    "tailscale-serve": "Tailscale Serve",
 };
 
 export function isAccessMode(value: string | undefined): value is AccessMode {
@@ -80,7 +80,7 @@ export function bindHost(mode: AccessMode): string {
         return tailscaleAddress() ?? "127.0.0.1";
     }
 
-    if (mode === "serve") {
+    if (mode === "tailscale-serve") {
         // tailscaled proxies the tailnet to loopback, so nothing here binds the tailnet address as Tailscale mode does.
         return "127.0.0.1";
     }
@@ -193,11 +193,11 @@ export function serveWithoutTailscale(request: {
     saved: AccessMode | undefined;
     ask: boolean;
 }): boolean {
-    if (request.given === "serve") {
+    if (request.given === "tailscale-serve") {
         return true;
     }
 
-    return request.given === undefined && request.saved === "serve" && !request.ask;
+    return request.given === undefined && request.saved === "tailscale-serve" && !request.ask;
 }
 
 /**
@@ -212,7 +212,7 @@ export function serveBailOut(request: {
     ask: boolean;
 }): boolean {
     return (
-        (request.access === "serve" || request.host === undefined) &&
+        (request.access === "tailscale-serve" || request.host === undefined) &&
         serveWithoutTailscale({ given: request.access, saved: request.saved, ask: request.ask })
     );
 }

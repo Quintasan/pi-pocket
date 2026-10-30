@@ -8,8 +8,10 @@ import { test } from "node:test";
 import {
     type AccessChoice,
     type AccessMode,
+    ACCESS_MODES,
     chooseAccess,
     findTailscale,
+    isAccessMode,
     serveBailOut,
     serveWithoutTailscale,
 } from "../src/launcher/access.ts";
@@ -52,7 +54,7 @@ function launch(
 }
 
 test("-y with a saved mode that is not ready ends the start instead of trying it forever", async () => {
-    for (const saved of ["tailscale", "serve"] as const) {
+    for (const saved of ["tailscale", "tailscale-serve"] as const) {
         const run = launch({ saved, ask: false, ready: ["local", "lan"] });
 
         assert.equal(await run.result, "unready");
@@ -79,11 +81,11 @@ test("a ready mode starts, with the cloudflared to run for a tunnel", async () =
 
 test("serve without tailscale stops the start when nobody is there to choose another mode", () => {
     const cases: { given?: AccessMode; saved?: AccessMode; ask: boolean; stops: boolean }[] = [
-        { given: "serve", ask: false, stops: true },
-        { given: "serve", ask: true, stops: true },
-        { saved: "serve", ask: false, stops: true },
-        { saved: "serve", ask: true, stops: false },
-        { given: "lan", saved: "serve", ask: false, stops: false },
+        { given: "tailscale-serve", ask: false, stops: true },
+        { given: "tailscale-serve", ask: true, stops: true },
+        { saved: "tailscale-serve", ask: false, stops: true },
+        { saved: "tailscale-serve", ask: true, stops: false },
+        { given: "lan", saved: "tailscale-serve", ask: false, stops: false },
         { given: undefined, saved: "local", ask: false, stops: false },
     ];
 
@@ -96,7 +98,7 @@ test("serve without tailscale stops the start when nobody is there to choose ano
     }
 });
 
-test("--host starts where it is told even with a saved serve choice, but --access serve still bails out", () => {
+test("--host starts where it is told even with a saved serve choice, but --access tailscale-serve still bails out", () => {
     const cases: {
         access?: AccessMode;
         saved?: AccessMode;
@@ -104,12 +106,12 @@ test("--host starts where it is told even with a saved serve choice, but --acces
         ask: boolean;
         bails: boolean;
     }[] = [
-        { access: "serve", ask: false, bails: true },
-        { saved: "serve", ask: false, bails: true },
-        { saved: "serve", ask: true, bails: false },
+        { access: "tailscale-serve", ask: false, bails: true },
+        { saved: "tailscale-serve", ask: false, bails: true },
+        { saved: "tailscale-serve", ask: true, bails: false },
         { saved: "local", ask: false, bails: false },
-        { saved: "serve", host: "0.0.0.0", ask: false, bails: false },
-        { access: "serve", host: "0.0.0.0", ask: false, bails: true },
+        { saved: "tailscale-serve", host: "0.0.0.0", ask: false, bails: false },
+        { access: "tailscale-serve", host: "0.0.0.0", ask: false, bails: true },
     ];
 
     for (const each of cases) {
@@ -156,4 +158,17 @@ test("findTailscale finds only a tailscale that is on PATH", (t) => {
         rmSync(empty, { recursive: true, force: true });
         rmSync(installed, { recursive: true, force: true });
     }
+});
+
+test("the serve mode is spelled the way systemd's unit and its guide spell it", () => {
+    // contrib/systemd/pi-pocket@.service runs `--access %i`, and docs/systemd.md lists the instance names.
+    assert.equal(isAccessMode("tailscale-serve"), true);
+    assert.equal(isAccessMode("serve"), false);
+    assert.deepEqual([...ACCESS_MODES].sort(), [
+        "cloudflare",
+        "lan",
+        "local",
+        "tailscale",
+        "tailscale-serve",
+    ]);
 });

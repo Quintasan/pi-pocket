@@ -3,7 +3,8 @@
  * quick tunnel, Tailscale, or Tailscale Serve), then it runs the server and the tunnel. The server restarts when the app
  * asks (exit code 75) or after a crash; the tunnel stays up across those restarts, so its address does not change.
  *
- *   pi-pocket [--access local|lan|cloudflare|tailscale|serve] [-y] [--port 8787] [--cwd DIR] [--data DIR] [--rotate-token]
+ *   pi-pocket [--access local|lan|cloudflare|tailscale|tailscale-serve] [-y] [--port 8787] [--cwd DIR] [--data DIR]
+ *   [--rotate-token]
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { once } from "node:events";
@@ -80,8 +81,10 @@ const settingsFile = join(options.data, "launcher.json");
 function loadSettings(): { access?: AccessMode } {
     try {
         const parsed = JSON.parse(readFileSync(settingsFile, "utf8")) as { access?: string };
+        // What the mode was called while the branch was young: read it, so an early copy keeps its choice.
+        const saved = parsed.access === "serve" ? "tailscale-serve" : parsed.access;
 
-        return isAccessMode(parsed.access) ? { access: parsed.access } : {};
+        return isAccessMode(saved) ? { access: saved } : {};
     } catch {
         return {};
     }
@@ -183,19 +186,19 @@ function accessChoices(): { mode: AccessMode; choice: Choice }[] {
                       },
         },
         {
-            mode: "serve",
+            mode: "tailscale-serve",
             choice:
                 findTailscale() === undefined
                     ? {
-                          label: ACCESS_LABELS.serve,
+                          label: ACCESS_LABELS["tailscale-serve"],
                           detail: "needs tailscale on PATH",
                           disabled: true,
                       }
                     : {
-                          label: ACCESS_LABELS.serve,
+                          label: ACCESS_LABELS["tailscale-serve"],
                           detail:
-                              state.mode === "serve" && state.tunnelUrl !== undefined
-                                  ? `${state.tunnelUrl} · your tailnet, encrypted`
+                              state.mode === "tailscale-serve" && state.accessUrl !== undefined
+                                  ? `${state.accessUrl} · your tailnet, encrypted`
                                   : "https on your tailnet · tailscale serve",
                       },
         },
@@ -214,7 +217,7 @@ async function prepareAccess(mode: AccessMode): Promise<boolean | string> {
         return (await ensureCloudflared()) ?? false;
     }
 
-    if (mode === "serve") {
+    if (mode === "tailscale-serve") {
         return await prepareServe();
     }
 
@@ -316,7 +319,7 @@ const state = {
     /** Show the panel once the server (and the tunnel, if any) is up. */
     panelPending: true,
     /** The address a tunnel or Tailscale Serve gives out, when one is up: the Cloudflare link or the tailnet's https name. */
-    tunnelUrl: undefined as string | undefined,
+    accessUrl: undefined as string | undefined,
     tunnelTrouble: false,
     tunnelFailures: 0,
     /** A restart asked for while the server was starting: done once it is up. */
@@ -334,8 +337,8 @@ const wildcard = (host: string) => host === "0.0.0.0" || host === "::";
 const loopback = (host: string) =>
     host === "localhost" || host === "::1" || host.startsWith("127.");
 
-/** Whether something outside this machine publishes the server, and `state.tunnelUrl` is its address. */
-const served = () => state.mode === "cloudflare" || state.mode === "serve";
+/** Whether something outside this machine publishes the server, and `state.accessUrl` is its address. */
+const served = () => state.mode === "cloudflare" || state.mode === "tailscale-serve";
 
 /** The address other devices should open. */
 function appUrl(): string {
@@ -343,8 +346,8 @@ function appUrl(): string {
 
     // Ahead of the wildcard and loopback branches: serve keeps the server itself on 127.0.0.1, which is not the address
     // to hand out; the tailnet's https name is, and it has no port.
-    if (served() && state.tunnelUrl !== undefined) {
-        return state.tunnelUrl;
+    if (served() && state.accessUrl !== undefined) {
+        return state.accessUrl;
     }
 
     if (wildcard(state.host)) {
@@ -379,13 +382,13 @@ function modeNote(): string {
             // It listens on every address (a VPN's, a public one), not only the local network's: say where.
             return `all addresses (${state.host}), not encrypted`;
         case "cloudflare":
-            return state.tunnelUrl === undefined
+            return state.accessUrl === undefined
                 ? "tunnel not up yet"
                 : "public https link, new each launch";
         case "tailscale":
             return "devices on your tailnet";
-        case "serve":
-            return state.tunnelUrl === undefined ? "serve not up yet" : "https on your tailnet";
+        case "tailscale-serve":
+            return state.accessUrl === undefined ? "serve not up yet" : "https on your tailnet";
         default:
             return "";
     }
@@ -394,7 +397,7 @@ function modeNote(): string {
 /** Other devices can open the app at `appUrl()`. */
 function reachable(): boolean {
     if (served()) {
-        return state.tunnelUrl !== undefined;
+        return state.accessUrl !== undefined;
     }
 
     return !loopback(state.host);
@@ -408,7 +411,7 @@ function sendAccess(): void {
     const access = {
         mode: state.mode,
         label: modeLabel(),
-        ...(served() && state.tunnelUrl !== undefined ? { url: state.tunnelUrl } : {}),
+        ...(served() && state.accessUrl !== undefined ? { url: state.accessUrl } : {}),
     };
 
     child.send({ type: "access", access });
@@ -457,7 +460,7 @@ async function showPanel(withQr: boolean): Promise<void> {
                 dim(
                     interactive
                         ? `  Only this machine can connect. Press ${bold("a")} to let your phone in.`
-                        : "  Only this machine can connect. Use --access lan, cloudflare, tailscale, or serve to let other devices in.",
+                        : "  Only this machine can connect. Use --access lan, cloudflare, tailscale, or tailscale-serve to let other devices in.",
                 ),
                 "",
             );
@@ -479,7 +482,7 @@ function maybeShowPanel(): void {
         return;
     }
 
-    if (served() && state.tunnelUrl === undefined && !state.tunnelTrouble) {
+    if (served() && state.accessUrl === undefined && !state.tunnelTrouble) {
         return;
     }
 
@@ -697,9 +700,9 @@ function startTunnel(binary: string): void {
                     return;
                 }
 
-                const changed = state.tunnelUrl !== undefined && state.tunnelUrl !== url;
+                const changed = state.accessUrl !== undefined && state.accessUrl !== url;
 
-                state.tunnelUrl = url;
+                state.accessUrl = url;
                 state.tunnelTrouble = false;
                 state.tunnelFailures = 0;
                 sendAccess();
@@ -722,7 +725,7 @@ function startTunnel(binary: string): void {
                     return;
                 }
 
-                state.tunnelUrl = undefined;
+                state.accessUrl = undefined;
                 state.tunnelTrouble = true;
                 state.tunnelFailures++;
                 sendAccess();
@@ -751,7 +754,7 @@ async function stopTunnel(): Promise<void> {
     const current = tunnel;
 
     tunnel = undefined;
-    state.tunnelUrl = undefined;
+    state.accessUrl = undefined;
     state.tunnelTrouble = false;
     state.tunnelFailures = 0;
     await current?.stop();
@@ -802,7 +805,7 @@ async function prepareServe(): Promise<boolean> {
         log(dim("  Using the Tailscale Serve mount already in place."));
     }
 
-    state.tunnelUrl = result.url;
+    state.accessUrl = result.url;
 
     return true;
 }
@@ -811,7 +814,7 @@ async function stopServe(): Promise<void> {
     const current = serve;
 
     serve = undefined;
-    state.tunnelUrl = undefined;
+    state.accessUrl = undefined;
     await current?.stop();
 }
 
@@ -819,17 +822,17 @@ async function stopServe(): Promise<void> {
 async function applyAccess(mode: AccessMode, binary: string | undefined): Promise<void> {
     // prepareServe() has already mounted serve and set its address, and tailscaled owns that mount: it stays for the new
     // mode, and only a move to another mode unmounts it. The stops below forget the address, so it is put back after.
-    const mounted = mode === "serve" && serve !== undefined ? state.tunnelUrl : undefined;
+    const mounted = mode === "tailscale-serve" && serve !== undefined ? state.accessUrl : undefined;
 
     await stopTunnel();
 
-    if (mode !== "serve") {
+    if (mode !== "tailscale-serve") {
         await stopServe();
     }
 
     state.mode = mode;
     saveSettings(mode);
-    state.tunnelUrl = mounted;
+    state.accessUrl = mounted;
     const host = bindHost(mode);
 
     state.panelPending = true;
@@ -890,7 +893,7 @@ async function changeAccess(): Promise<void> {
             return;
         }
 
-        if (next === "serve" && !(await prepareServe())) {
+        if (next === "tailscale-serve" && !(await prepareServe())) {
             return;
         }
 
@@ -969,9 +972,9 @@ async function main(): Promise<void> {
 
     // Serve's contract is the server on 127.0.0.1 with tailscaled proxying to it, so `--host` together with serve would
     // bind the LAN while the panel claims the tailnet. The two are a contradiction, not one overriding the other.
-    if (options.access === "serve" && options.host !== undefined) {
+    if (options.access === "tailscale-serve" && options.host !== undefined) {
         fail(
-            "--access serve keeps the server on 127.0.0.1 and lets Tailscale reach it; drop --host, or pick another access mode.",
+            "--access tailscale-serve keeps the server on 127.0.0.1 and lets Tailscale reach it; drop --host, or pick another access mode.",
         );
     }
 
@@ -1045,7 +1048,7 @@ async function main(): Promise<void> {
         // A run that was on serve and died can leave its mount behind, and tailscaled keeps it: clear it before this run
         // needs the port. Never for serve itself (prepareServe() mounted or adopted it) and never in the way of the
         // start: removeStaleServe() reports a failure by not removing anything rather than by throwing.
-        if (mode !== "serve" && settings.access === "serve") {
+        if (mode !== "tailscale-serve" && settings.access === "tailscale-serve") {
             const tailscale = findTailscale();
 
             if (tailscale !== undefined) {
