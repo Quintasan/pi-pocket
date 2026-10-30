@@ -318,7 +318,7 @@ const state = {
     everReady: false,
     /** Show the panel once the server (and the tunnel, if any) is up. */
     panelPending: true,
-    /** The address a tunnel or Tailscale Serve gives out, when one is up: the Cloudflare link or the tailnet's https name. */
+    /** The address others open, when something publishes this server: the Cloudflare link or the tailnet's https name. */
     accessUrl: undefined as string | undefined,
     tunnelTrouble: false,
     tunnelFailures: 0,
@@ -767,7 +767,8 @@ async function stopTunnel(): Promise<void> {
  * `start()` is both the check (version, a running daemon, certificates) and the mount. Tailscaled fronts this server on
  * 443 with the tailnet's https name and proxies to loopback, so, unlike `tailscale`, nothing here binds the tailnet
  * address, and the mount outlives a server restart because tailscaled owns it. Pi Pocket speaks SSE and long polling and
- * no WebSockets, so serve's HTTP/2 WebSocket gap does not apply.
+ * no WebSockets, so serve's HTTP/2 WebSocket gap does not apply. Nothing watches the mount after this: a `tailscale
+ * serve off` behind Pi Pocket's back shows up on the next start, not here.
  */
 function prepareServe(): boolean {
     const binary = findTailscale();
@@ -820,8 +821,9 @@ function stopServe(): void {
 
 /** Switch to `mode`: start or stop the tunnel, and restart the server when it has to listen somewhere else. */
 async function applyAccess(mode: AccessMode, binary: string | undefined): Promise<void> {
-    // prepareServe() has already mounted serve and set its address, and tailscaled owns that mount: it stays for the new
-    // mode, and only a move to another mode unmounts it. The stops below forget the address, so it is put back after.
+    // prepareServe() has already mounted `tailscale-serve` and set its address, and tailscaled owns that mount: it stays
+    // for the new mode, and only a move to another mode unmounts it. The stops below forget the address, so it is put
+    // back after.
     const mounted = mode === "tailscale-serve" && serve !== undefined ? state.accessUrl : undefined;
 
     await stopTunnel();
@@ -1039,7 +1041,8 @@ async function main(): Promise<void> {
         }
 
         state.mode = mode;
-        state.host = options.host ?? (mode === "custom" ? "127.0.0.1" : bindHost(mode));
+        // `custom` is `--host`'s own address, and only that turns a mode into `custom`; bindHost knows the rest.
+        state.host = mode === "custom" ? options.host! : bindHost(mode);
 
         if (mode !== "custom") {
             saveSettings(mode);

@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 /** The first Tailscale with this `serve` CLI; before 1.52.0 the positional form was the one there, and errors now. */
 export const TAILSCALE_MIN_VERSION: readonly [number, number, number] = [1, 52, 0];
 /** Tailscale serves a node on 443, the port every device expects https on. */
-export const SERVE_PORT: number = 443;
+export const SERVE_PORT = 443;
 
 const MINIMUM = `${TAILSCALE_MIN_VERSION[0]}.${TAILSCALE_MIN_VERSION[1]}`;
 /** The Tailscale CLI has no timeout of its own and waits forever on a hung daemon, so every command gets this long. */
@@ -484,7 +484,7 @@ function missingMount(message: string): boolean {
 /** The last thing a command said, for the message about why it exited without doing what it was asked. */
 function lastSaid(text: string): string {
     const said = text
-        .split("\n")
+        .split(/\r?\n/)
         .map((line) => line.trim())
         .filter((line) => line !== "")
         .slice(-3)

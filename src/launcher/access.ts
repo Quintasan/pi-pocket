@@ -69,7 +69,8 @@ export function tailscaleAddress(): string | undefined {
 
 /**
  * The address the server listens on. A tunnel reaches it on this machine, so only the local network mode opens it to
- * other machines directly, and Tailscale opens it to the tailnet only.
+ * other machines directly, and Tailscale opens it to the tailnet only. Tailscale Serve is a tunnel as well: tailscaled
+ * proxies the tailnet to loopback, so nothing binds the tailnet address for it as Tailscale mode does.
  */
 export function bindHost(mode: AccessMode): string {
     if (mode === "lan") {
@@ -78,11 +79,6 @@ export function bindHost(mode: AccessMode): string {
 
     if (mode === "tailscale") {
         return tailscaleAddress() ?? "127.0.0.1";
-    }
-
-    if (mode === "tailscale-serve") {
-        // tailscaled proxies the tailnet to loopback, so nothing here binds the tailnet address as Tailscale mode does.
-        return "127.0.0.1";
     }
 
     return "127.0.0.1";
@@ -183,10 +179,10 @@ export const TAILSCALE_MISSING_MESSAGE =
     'Tailscale Serve needs the tailscale command, and it is not on PATH.\nInstall it: macOS "brew install tailscale" (the App Store app keeps its command in the bundle, not on PATH) · Linux "curl -fsSL https://tailscale.com/install.sh | sh" · Windows "winget install Tailscale.Tailscale".\nOr pick another access mode: --access local|lan|cloudflare|tailscale.';
 
 /**
- * Whether the start has to stop because `serve` needs the missing tailscale and nobody is there to choose another
- * mode: `--access serve` or PI_POCKET_ACCESS asked for it, or it is the saved choice and no terminal can ask. It never
- * falls back to `local` on its own, because the user would believe they are on their tailnet while they are not, and it
- * leaves the saved choice alone so the next start works once Tailscale is installed.
+ * Whether the start has to stop because `tailscale-serve` needs the missing tailscale and nobody is there to choose
+ * another mode: `--access tailscale-serve` or PI_POCKET_ACCESS asked for it, or it is the saved choice and no terminal
+ * can ask. It never falls back to `local` on its own, because the user would believe they are on their tailnet while
+ * they are not, and it leaves the saved choice alone so the next start works once Tailscale is installed.
  */
 export function serveWithoutTailscale(request: {
     given: AccessMode | undefined;

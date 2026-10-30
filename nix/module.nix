@@ -182,6 +182,12 @@ in
         assertion = lib.length (lib.unique extensionNames) == lib.length extensionNames;
         message = "services.pi-pocket.extensions must have distinct filenames.";
       }
+      {
+        # The launcher refuses `--access tailscale-serve --host`: tailscaled proxies to loopback, so an address of its
+        # own would contradict the mode the panel shows. Catch that at evaluation, not on the next start.
+        assertion = !(cfg.access == "tailscale-serve" && cfg.host != null);
+        message = "services.pi-pocket.host must be null when access is \"tailscale-serve\".";
+      }
     ];
 
     users.users.pi-pocket = lib.mkIf (cfg.user == "pi-pocket") {
