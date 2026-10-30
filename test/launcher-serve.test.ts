@@ -145,6 +145,18 @@ test("serve needs HTTPS certificates, which the control plane reports as CertDom
     );
 });
 
+test("a node with an empty name has nothing to serve at, whatever the rest of the status says", () => {
+    // tailscaled can report an empty DNSName, which is not a name to mount under: the mount would fail after the fact.
+    assert.equal(
+        preflightProblem({
+            BackendState: "Running",
+            Self: { DNSName: "" },
+            CertDomains: ["host.tail1.ts.net"],
+        }),
+        'Tailscale has not given this machine a name in the tailnet yet. Check "tailscale status", then try again.',
+    );
+});
+
 test("a mount of ours at / is ours however its loopback target is spelled", () => {
     const ours = (proxy: string) => ({
         Web: { "host.tail1.ts.net:443": { Handlers: { "/": { Proxy: proxy } } } },
@@ -395,17 +407,12 @@ function fakeTailscale(options: FakeOptions = {}): Fake {
     };
 }
 
-function heard(): { ready: string[]; problems: string[]; events: ServeEvents } {
-    const ready: string[] = [];
+function heard(): { problems: string[]; events: ServeEvents } {
     const problems: string[] = [];
 
     return {
-        ready,
         problems,
         events: {
-            ready(url) {
-                ready.push(url);
-            },
             problem(line) {
                 problems.push(line);
             },
@@ -426,7 +433,7 @@ test("a fresh mount is published on the node's own name", async (t) => {
     try {
         const serve = new TailscaleServe(fake.binary, LOCAL_PORT, said.events);
 
-        assert.deepEqual(await serve.start(), {
+        assert.deepEqual(serve.start(), {
             ok: true,
             url: "https://host.tail1.ts.net/",
             adopted: false,
@@ -438,7 +445,6 @@ test("a fresh mount is published on the node's own name", async (t) => {
             "serve --bg --https=443 --set-path=/ http://127.0.0.1:8787",
             "serve status --json",
         ]);
-        assert.deepEqual(said.ready, ["https://host.tail1.ts.net/"]);
     } finally {
         fake.restore();
     }
@@ -457,7 +463,7 @@ test("a mount of ours that points at this server is adopted, not mounted again",
     try {
         const serve = new TailscaleServe(fake.binary, LOCAL_PORT, said.events);
 
-        assert.deepEqual(await serve.start(), {
+        assert.deepEqual(serve.start(), {
             ok: true,
             url: "https://host.tail1.ts.net/",
             adopted: true,
@@ -486,8 +492,8 @@ test("stop removes the mount it made, and only that path", async (t) => {
     try {
         const serve = new TailscaleServe(fake.binary, LOCAL_PORT, said.events);
 
-        await serve.start();
-        await serve.stop();
+        serve.start();
+        serve.stop();
         assert.equal(fake.calls().at(-1), "serve --https=443 --set-path=/ off");
         assert.deepEqual(said.problems, []);
     } finally {
@@ -508,7 +514,7 @@ test("stop with nothing mounted runs nothing", async (t) => {
     try {
         const serve = new TailscaleServe(fake.binary, LOCAL_PORT, said.events);
 
-        await serve.stop();
+        serve.stop();
         assert.deepEqual(fake.calls(), []);
         assert.deepEqual(said.problems, []);
     } finally {
@@ -529,7 +535,7 @@ test("a Funnel already on 443 stops the start before anything is mounted", async
     try {
         const serve = new TailscaleServe(fake.binary, LOCAL_PORT, said.events);
 
-        assert.deepEqual(await serve.start(), {
+        assert.deepEqual(serve.start(), {
             ok: false,
             message:
                 'Tailscale Funnel is on for host.tail1.ts.net:443, which would publish Pi Pocket to the internet. Turn it off with "tailscale funnel --https=443 off", which takes every handler on 443 with it, then try again.',
@@ -538,7 +544,6 @@ test("a Funnel already on 443 stops the start before anything is mounted", async
             fake.calls().some((line) => line.startsWith("serve --bg")),
             false,
         );
-        assert.deepEqual(said.ready, []);
     } finally {
         fake.restore();
     }
@@ -559,14 +564,14 @@ test("a mount that leaves no entry under our key is not reported as served", asy
     try {
         const serve = new TailscaleServe(fake.binary, LOCAL_PORT, said.events);
 
-        assert.deepEqual(await serve.start(), {
+        assert.deepEqual(serve.start(), {
             ok: false,
             message:
                 'Tailscale Serve reports no mount at "/" for host.tail1.ts.net:443. Check "tailscale serve status".',
         });
 
         // main removes the mount after a failed start, and the attempted mount is what makes that an `off` at all.
-        await serve.stop();
+        serve.stop();
         assert.equal(fake.calls().at(-1), "serve --https=443 --set-path=/ off");
     } finally {
         fake.restore();
@@ -588,8 +593,8 @@ test("stop says nothing about a handler Tailscale does not have", async (t) => {
     try {
         const serve = new TailscaleServe(fake.binary, LOCAL_PORT, said.events);
 
-        await serve.start();
-        await serve.stop();
+        serve.start();
+        serve.stop();
         assert.deepEqual(said.problems, []);
     } finally {
         fake.restore();
@@ -609,8 +614,8 @@ test("stop reports an off that failed for any other reason", async (t) => {
     try {
         const serve = new TailscaleServe(fake.binary, LOCAL_PORT, said.events);
 
-        await serve.start();
-        await serve.stop();
+        serve.start();
+        serve.stop();
         assert.deepEqual(said.problems, [
             'Run "sudo tailscale set --operator=$USER" once, so Pi Pocket may configure serve.',
         ]);
@@ -630,7 +635,7 @@ test("a mount a crashed launcher left behind is removed before anything is mount
     const said = heard();
 
     try {
-        assert.equal(await removeStaleServe(fake.binary, LOCAL_PORT, said.events), true);
+        assert.equal(removeStaleServe(fake.binary, LOCAL_PORT, said.events), true);
         assert.deepEqual(fake.calls(), [
             "status --json",
             "serve status --json",
@@ -653,7 +658,7 @@ test("a mount that points somewhere else is not ours to remove", async (t) => {
     const said = heard();
 
     try {
-        assert.equal(await removeStaleServe(fake.binary, LOCAL_PORT, said.events), false);
+        assert.equal(removeStaleServe(fake.binary, LOCAL_PORT, said.events), false);
         assert.equal(
             fake.calls().some((line) => line.endsWith(" off")),
             false,
@@ -673,7 +678,7 @@ test("nothing mounted means nothing for removeStaleServe to remove", async (t) =
     const fake = fakeTailscale();
 
     try {
-        assert.equal(await removeStaleServe(fake.binary, LOCAL_PORT), false);
+        assert.equal(removeStaleServe(fake.binary, LOCAL_PORT), false);
         assert.deepEqual(fake.calls(), ["status --json", "serve status --json"]);
     } finally {
         fake.restore();

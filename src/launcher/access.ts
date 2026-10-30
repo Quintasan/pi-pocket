@@ -201,9 +201,9 @@ export function serveWithoutTailscale(request: {
 }
 
 /**
- * Whether the start stops for the missing `serve` tailscale, `--host` aside. `--host` means the launcher listens where
- * it is told and never uses serve, so a saved serve choice must not refuse to start there; an explicit `--access serve`
- * still wins and still bails out.
+ * Whether the start stops for the missing `tailscale-serve` tailscale, `--host` aside: `--host` means the launcher
+ * listens where it is told and never uses serve, so a saved serve choice must not refuse to start there. An explicit
+ * `--access tailscale-serve` together with `--host` never arrives here; `main` refuses that pair before choosing.
  */
 export function serveBailOut(request: {
     access: AccessMode | undefined;
@@ -212,7 +212,7 @@ export function serveBailOut(request: {
     ask: boolean;
 }): boolean {
     return (
-        (request.access === "tailscale-serve" || request.host === undefined) &&
+        request.host === undefined &&
         serveWithoutTailscale({ given: request.access, saved: request.saved, ask: request.ask })
     );
 }

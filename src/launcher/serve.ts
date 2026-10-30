@@ -41,7 +41,6 @@ export type PortState =
     | { kind: "funnel"; detail: string };
 
 export interface ServeEvents {
-    ready(url: string): void;
     problem(line: string): void;
 }
 
@@ -107,7 +106,7 @@ export function preflightProblem(status: unknown): string | undefined {
     }
 
     // A node with no name of its own has no address to serve at, and mounting under an empty key fails after the fact.
-    if (dnsNameOf(settings) === undefined) {
+    if (tailnetHost(dnsNameOf(settings) ?? "") === undefined) {
         return NOT_NAMED;
     }
 
@@ -233,7 +232,7 @@ export class TailscaleServe {
         this.#events = events;
     }
 
-    async start(): Promise<ServeResult> {
+    start(): ServeResult {
         const versionRun = this.#run(["version"]);
 
         if (!versionRun.ok) {
@@ -339,12 +338,10 @@ export class TailscaleServe {
             };
         }
 
-        this.#events.ready(url);
-
         return { ok: true, url, adopted };
     }
 
-    async stop(): Promise<void> {
+    stop(): void {
         if (!this.#published) {
             return;
         }
@@ -374,11 +371,7 @@ export class TailscaleServe {
  * refusing its own remains. This never throws: a problem is said through `events?.problem`, and the answer is whether a
  * mount of ours was there to remove.
  */
-export async function removeStaleServe(
-    binary: string,
-    port: number,
-    events?: ServeEvents,
-): Promise<boolean> {
+export function removeStaleServe(binary: string, port: number, events?: ServeEvents): boolean {
     try {
         const statusRun = runTailscale(binary, ["status", "--json"], PROBE_TIMEOUT_MS);
 

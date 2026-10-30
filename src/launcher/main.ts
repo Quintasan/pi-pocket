@@ -218,7 +218,7 @@ async function prepareAccess(mode: AccessMode): Promise<boolean | string> {
     }
 
     if (mode === "tailscale-serve") {
-        return await prepareServe();
+        return prepareServe();
     }
 
     return true;
@@ -769,7 +769,7 @@ async function stopTunnel(): Promise<void> {
  * address, and the mount outlives a server restart because tailscaled owns it. Pi Pocket speaks SSE and long polling and
  * no WebSockets, so serve's HTTP/2 WebSocket gap does not apply.
  */
-async function prepareServe(): Promise<boolean> {
+function prepareServe(): boolean {
     const binary = findTailscale();
 
     if (binary === undefined) {
@@ -779,9 +779,6 @@ async function prepareServe(): Promise<boolean> {
     }
 
     const current = new TailscaleServe(binary, options.port, {
-        ready() {
-            // `start()` returns the address it mounted, so there is nothing to wait for here.
-        },
         problem(line) {
             log(yellow(`  tailscale: ${line}`));
         },
@@ -790,11 +787,11 @@ async function prepareServe(): Promise<boolean> {
     // Recorded before it is up, so a quit during the CLI round-trips below still takes down a mount those made.
     serve = current;
 
-    const result = await current.start();
+    const result = current.start();
 
     if (!result.ok) {
         log(yellow(`  ${result.message}`));
-        await stopServe();
+        stopServe();
 
         return false;
     }
@@ -810,12 +807,12 @@ async function prepareServe(): Promise<boolean> {
     return true;
 }
 
-async function stopServe(): Promise<void> {
+function stopServe(): void {
     const current = serve;
 
     serve = undefined;
     state.accessUrl = undefined;
-    await current?.stop();
+    current?.stop();
 }
 
 /** Switch to `mode`: start or stop the tunnel, and restart the server when it has to listen somewhere else. */
@@ -827,7 +824,7 @@ async function applyAccess(mode: AccessMode, binary: string | undefined): Promis
     await stopTunnel();
 
     if (mode !== "tailscale-serve") {
-        await stopServe();
+        stopServe();
     }
 
     state.mode = mode;
@@ -893,7 +890,7 @@ async function changeAccess(): Promise<void> {
             return;
         }
 
-        if (next === "tailscale-serve" && !(await prepareServe())) {
+        if (next === "tailscale-serve" && !prepareServe()) {
             return;
         }
 
@@ -938,7 +935,7 @@ async function quit(code: number): Promise<void> {
     log(dim("  Stopping Pi Pocket…"));
     await stopTunnel();
     // Before the server goes: the tailnet should never point at a port with nothing behind it.
-    await stopServe();
+    stopServe();
     const proc = child;
 
     if (proc !== undefined && proc.exitCode === null) {
@@ -1052,7 +1049,7 @@ async function main(): Promise<void> {
             const tailscale = findTailscale();
 
             if (tailscale !== undefined) {
-                if (await removeStaleServe(tailscale, options.port)) {
+                if (removeStaleServe(tailscale, options.port)) {
                     log(dim("  Removed the Tailscale Serve mount an earlier run left behind."));
                 }
             }
@@ -1067,7 +1064,7 @@ async function main(): Promise<void> {
 
         onKeys(onRunKey);
     } catch (error) {
-        await stopServe();
+        stopServe();
 
         throw error;
     }

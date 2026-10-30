@@ -98,7 +98,7 @@ test("serve without tailscale stops the start when nobody is there to choose ano
     }
 });
 
-test("--host starts where it is told even with a saved serve choice, but --access tailscale-serve still bails out", () => {
+test("--host starts where it is told even with a saved serve choice", () => {
     const cases: {
         access?: AccessMode;
         saved?: AccessMode;
@@ -111,7 +111,6 @@ test("--host starts where it is told even with a saved serve choice, but --acces
         { saved: "tailscale-serve", ask: true, bails: false },
         { saved: "local", ask: false, bails: false },
         { saved: "tailscale-serve", host: "0.0.0.0", ask: false, bails: false },
-        { access: "tailscale-serve", host: "0.0.0.0", ask: false, bails: true },
     ];
 
     for (const each of cases) {
