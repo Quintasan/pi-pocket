@@ -786,6 +786,9 @@ function prepareServe(): boolean {
 
     // Recorded before it is up, so a quit during the CLI round-trips below still takes down a mount those made.
     serve = current;
+    // Saved for the same reason from the other side: a launcher killed now leaves a mount tailscaled keeps, and only a
+    // saved serve choice makes the next start clear it instead of publishing the port this run listens on.
+    saveSettings("tailscale-serve");
 
     const result = current.start();
 
@@ -1042,14 +1045,21 @@ async function main(): Promise<void> {
             saveSettings(mode);
         }
 
-        // A run that was on serve and died can leave its mount behind, and tailscaled keeps it: clear it before this run
-        // needs the port. Never for serve itself (prepareServe() mounted or adopted it) and never in the way of the
-        // start: removeStaleServe() reports a failure by not removing anything rather than by throwing.
+        // A run that was on `tailscale-serve` and died can leave its mount behind, and tailscaled keeps it: clear it
+        // before this run needs the port. Never for the serve mode itself (prepareServe() mounted or adopted it, and
+        // saved the choice first) and never in the way of the start: removeStaleServe() says a problem through the
+        // events and removes nothing rather than throwing.
         if (mode !== "tailscale-serve" && settings.access === "tailscale-serve") {
             const tailscale = findTailscale();
 
             if (tailscale !== undefined) {
-                if (removeStaleServe(tailscale, options.port)) {
+                const removed = removeStaleServe(tailscale, options.port, {
+                    problem(line) {
+                        log(yellow(`  tailscale: ${line}`));
+                    },
+                });
+
+                if (removed) {
                     log(dim("  Removed the Tailscale Serve mount an earlier run left behind."));
                 }
             }
