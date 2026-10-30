@@ -783,11 +783,15 @@ async function prepareServe(): Promise<boolean> {
             log(yellow(`  tailscale: ${line}`));
         },
     });
+
+    // Recorded before it is up, so a quit during the CLI round-trips below still takes down a mount those made.
+    serve = current;
+
     const result = await current.start();
 
     if (!result.ok) {
         log(yellow(`  ${result.message}`));
-        await current.stop();
+        await stopServe();
 
         return false;
     }
@@ -799,7 +803,6 @@ async function prepareServe(): Promise<boolean> {
     }
 
     state.tunnelUrl = result.url;
-    serve = current;
 
     return true;
 }

@@ -13,7 +13,6 @@ import {
     removeStaleServe,
     sameLocalTarget,
     serveSupported,
-    serveUrlOf,
     TailscaleServe,
 } from "../src/launcher/serve.ts";
 import type { ServeEvents } from "../src/launcher/serve.ts";
@@ -48,6 +47,13 @@ test("serve needs 1.52 or newer, and an unknown version is not good enough", () 
     assert.equal(serveSupported(undefined), false);
 });
 
+/** The address a `/` mount of ours at `port` gives: what the launcher opens, and nothing for any other state. */
+function urlOf(config: unknown, dnsName: string, port: number): string | undefined {
+    const state = portState(config, dnsName, port, LOCAL_PORT);
+
+    return state.kind === "ours" ? state.url : undefined;
+}
+
 test("the address is https on the node's own name, with no port on 443", () => {
     const served = {
         Web: {
@@ -57,23 +63,30 @@ test("the address is https on the node's own name, with no port on 443", () => {
         },
     };
 
-    assert.equal(serveUrlOf(served, "host.tail1.ts.net", 443), "https://host.tail1.ts.net/");
+    assert.equal(urlOf(served, "host.tail1.ts.net", 443), "https://host.tail1.ts.net/");
 
     // Self.DNSName keeps the trailing dot the DNS name has.
-    assert.equal(serveUrlOf(served, "host.tail1.ts.net.", 443), "https://host.tail1.ts.net/");
+    assert.equal(urlOf(served, "host.tail1.ts.net.", 443), "https://host.tail1.ts.net/");
 
     // The config spells the name its own way, which is the control plane's, not necessarily the DNSName's.
-    assert.equal(serveUrlOf(served, "Host.Tail1.ts.net.", 443), "https://Host.Tail1.ts.net/");
+    assert.equal(urlOf(served, "Host.Tail1.ts.net.", 443), "https://Host.Tail1.ts.net/");
 
     const other = {
         Web: { "host.tail1.ts.net:8443": { Handlers: { "/": { Proxy: PROXY } } } },
     };
 
-    assert.equal(serveUrlOf(other, "host.tail1.ts.net.", 8443), "https://host.tail1.ts.net:8443/");
-    assert.equal(serveUrlOf(other, "host.tail1.ts.net.", 443), undefined);
-    assert.equal(serveUrlOf({}, "host.tail1.ts.net.", 443), undefined);
-    assert.equal(serveUrlOf(null, "host.tail1.ts.net.", 443), undefined);
-    assert.equal(serveUrlOf(served, "", 443), undefined);
+    assert.equal(urlOf(other, "host.tail1.ts.net.", 8443), "https://host.tail1.ts.net:8443/");
+    assert.equal(urlOf(other, "host.tail1.ts.net.", 443), undefined);
+    assert.equal(urlOf({}, "host.tail1.ts.net.", 443), undefined);
+    assert.equal(urlOf(null, "host.tail1.ts.net.", 443), undefined);
+    assert.equal(urlOf(served, "", 443), undefined);
+
+    // Another path on the port is not a mount for us, and it must not be reported as one: only a `/` handler is ours.
+    const otherPath = {
+        Web: { "host.tail1.ts.net:443": { Handlers: { "/api": { Proxy: PROXY } } } },
+    };
+
+    assert.equal(urlOf(otherPath, "host.tail1.ts.net.", 443), undefined);
 });
 
 test("a node that is not running or not signed in has nothing to serve", () => {
@@ -84,7 +97,7 @@ test("a node that is not running or not signed in has nothing to serve", () => {
     assert.equal(preflightProblem(null), notRunning);
     assert.equal(preflightProblem(undefined), notRunning);
 
-    for (const backend of ["NeedsLogin", "Stopped", "NoState", "Starting"]) {
+    for (const backend of ["NeedsLogin", "Stopped", "NoState"]) {
         assert.equal(
             preflightProblem({
                 BackendState: backend,
@@ -158,6 +171,7 @@ test("a mount of ours at / is ours however its loopback target is spelled", () =
 
 test("only a loopback target on our own port counts as this server", () => {
     assert.equal(sameLocalTarget("http://127.0.0.1:8787", LOCAL_PORT), true);
+    assert.equal(sameLocalTarget("http://127.0.0.1:8787/", LOCAL_PORT), true);
     assert.equal(sameLocalTarget("http://localhost:8787", LOCAL_PORT), true);
     assert.equal(sameLocalTarget("localhost:8787", LOCAL_PORT), true);
     assert.equal(sameLocalTarget("127.0.0.1:8787", LOCAL_PORT), true);
@@ -167,7 +181,10 @@ test("only a loopback target on our own port counts as this server", () => {
     assert.equal(sameLocalTarget("http://localhost:9999", LOCAL_PORT), false);
     assert.equal(sameLocalTarget("http://10.0.0.5:8787", LOCAL_PORT), false);
     assert.equal(sameLocalTarget("http://127.0.0.1", LOCAL_PORT), false);
-    assert.equal(sameLocalTarget("http://127.0.0.1:8787/path", LOCAL_PORT), true);
+    // Only the root of the port over plain http is this server: a path of its own, or TLS at a server that speaks http,
+    // is a different mount, and adopting it would half work.
+    assert.equal(sameLocalTarget("http://127.0.0.1:8787/path", LOCAL_PORT), false);
+    assert.equal(sameLocalTarget("https://127.0.0.1:8787", LOCAL_PORT), false);
     assert.equal(sameLocalTarget("", LOCAL_PORT), false);
     assert.equal(sameLocalTarget("   ", LOCAL_PORT), false);
     assert.equal(sameLocalTarget("http://", LOCAL_PORT), false);
@@ -515,7 +532,7 @@ test("a Funnel already on 443 stops the start before anything is mounted", async
         assert.deepEqual(await serve.start(), {
             ok: false,
             message:
-                'Tailscale Funnel is on for host.tail1.ts.net, which would publish Pi Pocket to the internet. Turn it off with "tailscale funnel --https=443 off", then try again.',
+                'Tailscale Funnel is on for host.tail1.ts.net:443, which would publish Pi Pocket to the internet. Turn it off with "tailscale funnel --https=443 off", which takes every handler on 443 with it, then try again.',
         });
         assert.equal(
             fake.calls().some((line) => line.startsWith("serve --bg")),
@@ -545,7 +562,7 @@ test("a mount that leaves no entry under our key is not reported as served", asy
         assert.deepEqual(await serve.start(), {
             ok: false,
             message:
-                'Tailscale Serve reports no mount for host.tail1.ts.net:443. Check "tailscale serve status".',
+                'Tailscale Serve reports no mount at "/" for host.tail1.ts.net:443. Check "tailscale serve status".',
         });
 
         // main removes the mount after a failed start, and the attempted mount is what makes that an `off` at all.

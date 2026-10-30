@@ -2,7 +2,7 @@
 // server keeps speaking plain http and every request arrives with X-Forwarded-Proto: https and the original Host.
 import { spawnSync } from "node:child_process";
 
-/** The first Tailscale that has `serve --bg`; older ones only have a positional form that was removed later. */
+/** The first Tailscale with this `serve` CLI; before 1.52.0 the positional form was the one there, and errors now. */
 export const TAILSCALE_MIN_VERSION: readonly [number, number, number] = [1, 52, 0];
 /** Tailscale serves a node on 443, the port every device expects https on. */
 export const SERVE_PORT: number = 443;
@@ -12,11 +12,20 @@ const MINIMUM = `${TAILSCALE_MIN_VERSION[0]}.${TAILSCALE_MIN_VERSION[1]}`;
 const TIMEOUT_MS = 10_000;
 /** Reading the status of the daemon is local and quick, so a probe that hangs is abandoned sooner than a mount is. */
 const PROBE_TIMEOUT_MS = 3_000;
+/**
+ * The mount waits on the control plane, and enabling HTTPS certificates is a step an admin may be doing right then, so
+ * it gets longer than a probe. It is still bounded: the launcher blocks on the CLI until it answers.
+ */
+const MOUNT_TIMEOUT_MS = 30_000;
 
 const NOT_RUNNING = "Tailscale is not running or not signed in. Run: tailscale up";
 const NOT_AUTHORIZED = "This machine is waiting for approval in the tailnet's admin console.";
+const STARTING = "Tailscale is still starting up. Try again in a moment.";
+const NOT_NAMED =
+    'Tailscale has not given this machine a name in the tailnet yet. Check "tailscale status", then try again.';
+// An empty CertDomains is also what a netmap that has not arrived yet looks like, so this asks rather than asserts.
 const NO_CERTIFICATES =
-    "HTTPS certificates are off in this tailnet. In the admin console, open DNS and enable MagicDNS and HTTPS certificates, then try again.";
+    "Pi Pocket could not confirm an HTTPS name for this machine yet. If HTTPS certificates are off in this tailnet, open DNS in the admin console, enable MagicDNS and HTTPS certificates, then try again.";
 const UNREADABLE =
     'Pi Pocket could not read the "tailscale serve status" output. Update Tailscale, then try again.';
 
@@ -67,26 +76,6 @@ export function serveSupported(version: number[] | undefined): boolean {
     return true;
 }
 
-/**
- * The address this node serves `port` on, when `tailscale serve status --json` has something to say about it there. The
- * status is read after mounting because only tailscaled knows whether the mount took, and a certificate whose name
- * differs from the node's own would change the address.
- */
-export function serveUrlOf(config: unknown, dnsName: string, port: number): string | undefined {
-    const host = tailnetHost(dnsName);
-
-    if (host === undefined) {
-        return undefined;
-    }
-
-    // The config spells the name the way the control plane gave it to tailscaled, which need not match the case here.
-    if (entryKey(recordOf(recordOf(config)?.Web), host, port) === undefined) {
-        return undefined;
-    }
-
-    return serveUrl(host, port);
-}
-
 /** Why this node cannot serve anything yet, in terms someone can act on; undefined when it can. */
 export function preflightProblem(status: unknown): string | undefined {
     const settings = recordOf(status);
@@ -102,6 +91,11 @@ export function preflightProblem(status: unknown): string | undefined {
         return NOT_AUTHORIZED;
     }
 
+    // A daemon on its way up is a moment, not a fault, and `tailscale up` is not the advice for it.
+    if (backend === "Starting") {
+        return STARTING;
+    }
+
     // NeedsLogin, Stopped and NoState, like a missing backend state, all mean there is nothing to serve into.
     if (backend !== "Running") {
         return NOT_RUNNING;
@@ -110,6 +104,11 @@ export function preflightProblem(status: unknown): string | undefined {
     // Self is null while the node is logged out, and a node that is not in the tailnet cannot be served into it.
     if (recordOf(settings.Self) === undefined) {
         return NOT_RUNNING;
+    }
+
+    // A node with no name of its own has no address to serve at, and mounting under an empty key fails after the fact.
+    if (dnsNameOf(settings) === undefined) {
+        return NOT_NAMED;
     }
 
     // CertDomains comes from the control plane and is empty unless HTTPS certificates are enabled in the admin console:
@@ -204,7 +203,9 @@ export function sameLocalTarget(proxy: unknown, port: number): boolean {
     const targetPort =
         target.port === "" ? (target.protocol === "https:" ? 443 : 80) : Number(target.port);
 
-    return targetPort === port;
+    // The root of the port over plain http, which is what a mount of this server is: `/app` is a different address, and
+    // https at a server that speaks http is a mount that only half works. Neither is ours to adopt or to report.
+    return target.protocol === "http:" && target.pathname === "/" && targetPort === port;
 }
 
 /**
@@ -280,11 +281,13 @@ export class TailscaleServe {
 
         const state = portState(before.config, dnsName, SERVE_PORT, this.#port);
 
+        // `tailscale funnel --https=443 off` is the only switch the CLI has, and it takes every handler on the port with
+        // it, ours and anyone else's, so the message says so rather than leaving that to the command's own help.
         if (state.kind === "funnel") {
             // Mounting `/` under Funnel would put Pi Pocket on the internet, not just on the tailnet the menu promises.
             return {
                 ok: false,
-                message: `Tailscale Funnel is on for ${servedName}, which would publish Pi Pocket to the internet. Turn it off with "tailscale funnel --https=${SERVE_PORT} off", then try again.`,
+                message: `Tailscale Funnel is on for ${state.detail ?? servedName}, which would publish Pi Pocket to the internet. Turn it off with "tailscale funnel --https=${SERVE_PORT} off", which takes every handler on ${SERVE_PORT} with it, then try again.`,
             };
         }
 
@@ -295,6 +298,8 @@ export class TailscaleServe {
             };
         }
 
+        /** What the mount command said, for the case where it exits without mounting anything. */
+        let said = "";
         const adopted = state.kind === "ours";
 
         // A mount command that timed out may still have been applied by tailscaled, and nothing else can tell us whether
@@ -303,21 +308,25 @@ export class TailscaleServe {
 
         if (!adopted) {
             // --set-path=/ keeps the mount to this one path, so removing it later cannot take another mount with it.
-            const mounted = this.#run([
-                "serve",
-                "--bg",
-                `--https=${SERVE_PORT}`,
-                "--set-path=/",
-                proxy,
-            ]);
+            const mounted = this.#run(
+                ["serve", "--bg", `--https=${SERVE_PORT}`, "--set-path=/", proxy],
+                MOUNT_TIMEOUT_MS,
+            );
 
             if (!mounted.ok) {
                 return { ok: false, message: mounted.message };
             }
+
+            // Tailscale can exit 0 without mounting anything: with HTTPS certificates off it prints the address that
+            // turns them on and stops. That address is the only useful thing to say next, so keep it.
+            said = lastSaid(`${mounted.out}\n${mounted.err}`);
         }
 
         const after = this.#serveConfig();
-        const url = after.ok ? serveUrlOf(after.config, dnsName, SERVE_PORT) : undefined;
+        const served = after.ok
+            ? portState(after.config, dnsName, SERVE_PORT, this.#port)
+            : undefined;
+        const url = served?.kind === "ours" ? served.url : undefined;
 
         if (url === undefined) {
             // Only tailscaled's own report is worth opening: Self.DNSName would name an address nothing serves when the
@@ -325,7 +334,7 @@ export class TailscaleServe {
             return {
                 ok: false,
                 message: after.ok
-                    ? `Tailscale Serve reports no mount for ${servedName}:${SERVE_PORT}. Check "tailscale serve status".`
+                    ? `Tailscale Serve reports no mount at "/" for ${servedName}:${SERVE_PORT}.${said === "" ? "" : ` Tailscale said: ${said}`} Check "tailscale serve status".`
                     : after.message,
             };
         }
@@ -355,8 +364,8 @@ export class TailscaleServe {
         return readServeConfig(this.#binary);
     }
 
-    #run(args: string[]): Run {
-        return runTailscale(this.#binary, args);
+    #run(args: string[], timeout = TIMEOUT_MS): Run {
+        return runTailscale(this.#binary, args, timeout);
     }
 }
 
@@ -475,13 +484,20 @@ function readServeConfig(binary: string, timeout = TIMEOUT_MS): ConfigRun {
 
 /** Whether a failed `off` is tailscaled saying there was nothing mounted under that path. */
 function missingMount(message: string): boolean {
-    const text = message.toLowerCase();
+    // "handler does not exist" and "serve config does not exist" are the two ways tailscaled says it, in every version.
+    return message.toLowerCase().includes("does not exist");
+}
 
-    return (
-        text.includes("does not exist") ||
-        text.includes("no handler") ||
-        text.includes("no serve config")
-    );
+/** The last thing a command said, for the message about why it exited without doing what it was asked. */
+function lastSaid(text: string): string {
+    const said = text
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line !== "")
+        .slice(-3)
+        .join(" ");
+
+    return said.length > 300 ? `${said.slice(0, 297)}…` : said;
 }
 
 /** Why the CLI refused, in terms someone can act on, or its own last word. */

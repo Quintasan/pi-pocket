@@ -180,7 +180,7 @@ export function findTailscale(): string | undefined {
 }
 
 export const TAILSCALE_MISSING_MESSAGE =
-    'Tailscale Serve needs the tailscale command, and it is not on PATH.\nInstall it: macOS "brew install tailscale" or the App Store app · Linux "curl -fsSL https://tailscale.com/install.sh | sh" · Windows "winget install Tailscale.Tailscale".\nOr pick another access mode: --access local|lan|cloudflare|tailscale.';
+    'Tailscale Serve needs the tailscale command, and it is not on PATH.\nInstall it: macOS "brew install tailscale" (the App Store app keeps its command in the bundle, not on PATH) · Linux "curl -fsSL https://tailscale.com/install.sh | sh" · Windows "winget install Tailscale.Tailscale".\nOr pick another access mode: --access local|lan|cloudflare|tailscale.';
 
 /**
  * Whether the start has to stop because `serve` needs the missing tailscale and nobody is there to choose another
