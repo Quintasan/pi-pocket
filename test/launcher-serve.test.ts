@@ -63,19 +63,20 @@ test("the address is https on the node's own name, with no port on 443", () => {
         },
     };
 
-    assert.equal(urlOf(served, "host.tail1.ts.net", 443), "https://host.tail1.ts.net/");
+    // No trailing slash: the panel appends the sign-in path to this, and `https://host//login` is a link nobody can use.
+    assert.equal(urlOf(served, "host.tail1.ts.net", 443), "https://host.tail1.ts.net");
 
     // Self.DNSName keeps the trailing dot the DNS name has.
-    assert.equal(urlOf(served, "host.tail1.ts.net.", 443), "https://host.tail1.ts.net/");
+    assert.equal(urlOf(served, "host.tail1.ts.net.", 443), "https://host.tail1.ts.net");
 
     // The config spells the name its own way, which is the control plane's, not necessarily the DNSName's.
-    assert.equal(urlOf(served, "Host.Tail1.ts.net.", 443), "https://Host.Tail1.ts.net/");
+    assert.equal(urlOf(served, "Host.Tail1.ts.net.", 443), "https://Host.Tail1.ts.net");
 
     const other = {
         Web: { "host.tail1.ts.net:8443": { Handlers: { "/": { Proxy: PROXY } } } },
     };
 
-    assert.equal(urlOf(other, "host.tail1.ts.net.", 8443), "https://host.tail1.ts.net:8443/");
+    assert.equal(urlOf(other, "host.tail1.ts.net.", 8443), "https://host.tail1.ts.net:8443");
     assert.equal(urlOf(other, "host.tail1.ts.net.", 443), undefined);
     assert.equal(urlOf({}, "host.tail1.ts.net.", 443), undefined);
     assert.equal(urlOf(null, "host.tail1.ts.net.", 443), undefined);
@@ -161,7 +162,7 @@ test("a mount of ours at / is ours however its loopback target is spelled", () =
     const ours = (proxy: string) => ({
         Web: { "host.tail1.ts.net:443": { Handlers: { "/": { Proxy: proxy } } } },
     });
-    const address = { kind: "ours", url: "https://host.tail1.ts.net/" };
+    const address = { kind: "ours", url: "https://host.tail1.ts.net" };
 
     assert.deepEqual(portState(ours(PROXY), NAME, 443, LOCAL_PORT), address);
     assert.deepEqual(portState(ours("http://localhost:8787"), NAME, 443, LOCAL_PORT), address);
@@ -285,11 +286,11 @@ test("a Funnel on this name and port is reported before anything else holds it",
             443,
             LOCAL_PORT,
         ),
-        { kind: "ours", url: "https://host.tail1.ts.net/" },
+        { kind: "ours", url: "https://host.tail1.ts.net" },
     );
     assert.deepEqual(portState({ ...ours }, NAME, 443, LOCAL_PORT), {
         kind: "ours",
-        url: "https://host.tail1.ts.net/",
+        url: "https://host.tail1.ts.net",
     });
     assert.deepEqual(
         portState({ AllowFunnel: { "other.tail1.ts.net:443": true } }, NAME, 443, LOCAL_PORT),
@@ -435,7 +436,7 @@ test("a fresh mount is published on the node's own name", async (t) => {
 
         assert.deepEqual(serve.start(), {
             ok: true,
-            url: "https://host.tail1.ts.net/",
+            url: "https://host.tail1.ts.net",
             adopted: false,
         });
         assert.deepEqual(fake.calls(), [
@@ -465,7 +466,7 @@ test("a mount of ours that points at this server is adopted, not mounted again",
 
         assert.deepEqual(serve.start(), {
             ok: true,
-            url: "https://host.tail1.ts.net/",
+            url: "https://host.tail1.ts.net",
             adopted: true,
         });
         assert.deepEqual(fake.calls(), [

@@ -438,10 +438,10 @@ async function showPanel(withQr: boolean): Promise<void> {
     lines.push(row("Folder", tilde(options.cwd)));
     lines.push(row("Data", tilde(options.data)));
     lines.push("");
-    const login =
-        state.loginPath === undefined
-            ? undefined
-            : `${reachable() ? appUrl() : localUrl()}${state.loginPath}`;
+    // The base comes from a tunnel's own output or from serve, so a trailing slash is dropped rather than trusted: the
+    // sign-in path starts with one, and two in a row (`https://host//login`) is a link nobody can open.
+    const base = (reachable() ? appUrl() : localUrl()).replace(/\/+$/, "");
+    const login = state.loginPath === undefined ? undefined : `${base}${state.loginPath}`;
 
     if (login !== undefined) {
         if (withQr && reachable()) {

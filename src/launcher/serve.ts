@@ -591,8 +591,12 @@ function mountAt(
     return recordOf(recordOf(entry?.Handlers)?.["/"]);
 }
 
+/**
+ * The https address of a mount on `port`, with no trailing slash: it is a base a path gets appended to (the panel's
+ * sign-in link), and tailscaled answers `/` itself when a browser opens it.
+ */
 function serveUrl(host: string, port: number): string {
-    return port === SERVE_PORT ? `https://${host}/` : `https://${host}:${port}/`;
+    return port === SERVE_PORT ? `https://${host}` : `https://${host}:${port}`;
 }
 
 function dnsNameOf(status: unknown): string | undefined {
