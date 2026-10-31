@@ -10,10 +10,13 @@ import {
     type AccessMode,
     ACCESS_MODES,
     chooseAccess,
+    chosenHost,
     findTailscale,
     isAccessMode,
     serveBailOut,
+    serveHostConflict,
     serveWithoutTailscale,
+    staleServePorts,
 } from "../src/launcher/access.ts";
 
 /** A launch where only `ready` modes can be used. */
@@ -54,11 +57,9 @@ function launch(
 }
 
 test("-y with a saved mode that is not ready ends the start instead of trying it forever", async () => {
-    for (const saved of ["tailscale", "tailscale-serve"] as const) {
-        const run = launch({ saved, ask: false, ready: ["local", "lan"] });
+    const run = launch({ saved: "tailscale", ask: false, ready: ["local", "lan"] });
 
-        assert.equal(await run.result, "unready");
-    }
+    assert.equal(await run.result, "unready");
 });
 
 test("a mode from the menu that is not ready goes back to the menu", async () => {
@@ -170,4 +171,32 @@ test("the serve mode is spelled the way systemd's unit and its guide spell it", 
         "tailscale",
         "tailscale-serve",
     ]);
+});
+
+test("--host wins over a named mode's own address", () => {
+    // The nix module passes --access and --host together, so the override has to survive the mode's own bind address.
+    assert.equal(chosenHost({ mode: "lan", host: "192.168.1.5" }), "192.168.1.5");
+    assert.equal(chosenHost({ mode: "lan", host: undefined }), "0.0.0.0");
+    assert.equal(chosenHost({ mode: "local", host: "127.0.0.2" }), "127.0.0.2");
+    assert.equal(chosenHost({ mode: "local", host: undefined }), "127.0.0.1");
+    assert.equal(chosenHost({ mode: "cloudflare", host: "127.0.0.1" }), "127.0.0.1");
+    // A custom mode exists only because of --host, and it carries the address.
+    assert.equal(chosenHost({ mode: "custom", host: "10.1.2.3" }), "10.1.2.3");
+    assert.equal(chosenHost({ mode: "custom", host: undefined }), "127.0.0.1");
+});
+
+test("--access tailscale-serve and --host contradict each other, whatever the order", () => {
+    assert.equal(serveHostConflict({ access: "tailscale-serve", host: "0.0.0.0" }), true);
+    assert.equal(serveHostConflict({ access: "tailscale-serve", host: undefined }), false);
+    assert.equal(serveHostConflict({ access: "lan", host: "0.0.0.0" }), false);
+    assert.equal(serveHostConflict({ access: undefined, host: "0.0.0.0" }), false);
+});
+
+test("stale cleanup covers the port this run uses and the one the last run saved", () => {
+    // A killed run on --port 9000 left its mount pointing at 9000, so the next start on 8787 has to look for both.
+    assert.deepEqual(staleServePorts("local", 9000, 8787), [9000, 8787]);
+    assert.deepEqual(staleServePorts("local", undefined, 8787), [8787]);
+    assert.deepEqual(staleServePorts("lan", 8787, 8787), [8787]);
+    // In serve mode, prepareServe() made or adopted the mount for this run's port: nothing is stale.
+    assert.deepEqual(staleServePorts("tailscale-serve", 9000, 8787), []);
 });

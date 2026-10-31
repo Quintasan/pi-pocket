@@ -213,6 +213,50 @@ export function serveBailOut(request: {
     );
 }
 
+/**
+ * Whether `--access tailscale-serve` is being combined with `--host`. The two contradict each other: serve means the
+ * server listens on loopback and tailscaled reaches it there, so a bind address of its own would be a mode the panel
+ * does not describe. The launcher refuses the pair and the nix module asserts it at evaluation.
+ */
+export function serveHostConflict(request: {
+    access: AccessMode | undefined;
+    host: string | undefined;
+}): boolean {
+    return request.access === "tailscale-serve" && request.host !== undefined;
+}
+
+/**
+ * The address the server binds. `--host` wins over a named mode, which the nix module relies on when it passes both;
+ * `custom` exists only because of `--host`, so it has no other address to fall back to.
+ */
+export function chosenHost(request: {
+    mode: AccessMode | "custom";
+    host: string | undefined;
+}): string {
+    if (request.mode === "custom") {
+        return request.host ?? "127.0.0.1";
+    }
+
+    return request.host ?? bindHost(request.mode);
+}
+
+/**
+ * The loopback ports a mount left by an earlier run could point at: the port this run listens on, and the one the last
+ * run saved, since a killed run's mount still targets the port that run used. Empty for `tailscale-serve` itself, whose
+ * mount prepareServe() mounted or adopted for this run's port.
+ */
+export function staleServePorts(
+    mode: AccessMode | "custom",
+    saved: number | undefined,
+    port: number,
+): number[] {
+    if (mode === "tailscale-serve") {
+        return [];
+    }
+
+    return [...new Set([saved, port].filter((each): each is number => each !== undefined))];
+}
+
 /** Where to get cloudflared on this platform: a release binary the launcher can download, or how to install it. */
 export function cloudflaredSource(): { url: string } | { install: string } {
     const arch = (

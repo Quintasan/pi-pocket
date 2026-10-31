@@ -22,16 +22,21 @@ import {
     cloudflaredSource,
     downloadCloudflared,
     findCloudflared,
+    chosenHost,
     findTailscale,
     isAccessMode,
     lanAddresses,
     serveBailOut,
+    serveHostConflict,
+    staleServePorts,
     TAILSCALE_MISSING_MESSAGE,
     tailscaleAddress,
 } from "./access.ts";
 import { fail, parseArgs } from "./options.ts";
 import { removeStaleServe, TailscaleServe } from "./serve.ts";
-// The one server module the launcher runs itself: it imports only Node's own, so an update cannot break the launcher.
+
+// The two server modules the launcher runs itself: both import only Node's own, so an update cannot break the launcher.
+import { takeLock } from "../server/lock.ts";
 import {
     readPending,
     restoreMissingNpmPackage,
@@ -78,25 +83,49 @@ const options = parseArgs(process.argv.slice(2));
 mkdirSync(options.data, { recursive: true, mode: 0o700 });
 const settingsFile = join(options.data, "launcher.json");
 
-function loadSettings(): { access?: AccessMode } {
+function loadSettings(): { access?: AccessMode; port?: number } {
     try {
-        const parsed = JSON.parse(readFileSync(settingsFile, "utf8")) as { access?: string };
-        // What the mode was called while the branch was young: read it, so an early copy keeps its choice.
+        const parsed = JSON.parse(readFileSync(settingsFile, "utf8")) as {
+            access?: string;
+            port?: number;
+        };
+        // `serve` is what the mode was called before it took systemd's own name for it, in builds of this branch.
         const saved = parsed.access === "serve" ? "tailscale-serve" : parsed.access;
+        const port = parsed.port;
 
-        return isAccessMode(saved) ? { access: saved } : {};
+        return {
+            ...(isAccessMode(saved) ? { access: saved } : {}),
+            ...(Number.isSafeInteger(port) && port! > 0 && port! < 65_536 ? { port } : {}),
+        };
     } catch {
         return {};
     }
 }
 
-function saveSettings(access: AccessMode): void {
-    writeFileSync(settingsFile, `${JSON.stringify({ access }, null, "\t")}\n`, { mode: 0o600 });
+/** The last choice, with the port it listened on: a mount left by a killed run points at that port, not at this one's. */
+function saveSettings(access: AccessMode, port: number): void {
+    writeFileSync(settingsFile, `${JSON.stringify({ access, port }, null, "\t")}\n`, {
+        mode: 0o600,
+    });
 }
 
 const home = homedir();
 const tilde = (path: string) =>
     path === home || path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
+
+/**
+ * One launcher per data folder, because two would share tailscaled's mount for `/`: the second adopts the first's
+ * mount, and its quit takes that mount down, leaving the running launcher's tailnet address pointing at nothing.
+ */
+let releaseLauncherLock: () => void;
+
+try {
+    releaseLauncherLock = takeLock(join(options.data, "launcher.lock"));
+} catch (error) {
+    fail(
+        `Another Pi Pocket launcher is using ${tilde(options.data)}. ${error instanceof Error ? error.message : String(error)}`,
+    );
+}
 
 // ─── Output ─────────────────────────────────────────────────────────────
 
@@ -787,23 +816,27 @@ function prepareServe(): boolean {
 
     // Recorded before it is up, so a quit during the CLI round-trips below still takes down a mount those made.
     serve = current;
-    // Saved for the same reason from the other side: a launcher killed now leaves a mount tailscaled keeps, and only a
-    // saved serve choice makes the next start clear it instead of publishing the port this run listens on.
-    saveSettings("tailscale-serve");
 
     const result = current.start();
 
     if (!result.ok) {
         log(yellow(`  ${result.message}`));
-        stopServe();
+        // Only what this call made. `stopServe()` would also forget `state.accessUrl`, which here still belongs to a
+        // live Cloudflare tunnel this switch was about to leave.
+        serve = undefined;
+        current.stop();
 
         return false;
     }
 
-    // An existing mount of ours is adopted rather than mounted again, so say it, or the owner wonders why no new mount
-    // appeared.
+    // An existing mount of ours is adopted rather than mounted again, and it is the owner's as much as ours: it stays
+    // when this launcher quits, which is what the line says, rather than being taken down at the end of the session.
     if (result.adopted) {
-        log(dim("  Using the Tailscale Serve mount already in place."));
+        log(
+            dim(
+                "  Using the Tailscale Serve mount already in place; it stays when this launcher quits.",
+            ),
+        );
     }
 
     state.accessUrl = result.url;
@@ -833,7 +866,7 @@ async function applyAccess(mode: AccessMode, binary: string | undefined): Promis
     }
 
     state.mode = mode;
-    saveSettings(mode);
+    saveSettings(mode, options.port);
     state.accessUrl = mounted;
     const host = bindHost(mode);
 
@@ -963,7 +996,10 @@ if (process.platform !== "win32") {
     process.on("SIGUSR2", () => restartServer());
 }
 
-process.on("exit", () => restoreTerminal());
+process.on("exit", () => {
+    restoreTerminal();
+    releaseLauncherLock();
+});
 
 // ─── Start ──────────────────────────────────────────────────────────────
 
@@ -974,7 +1010,7 @@ async function main(): Promise<void> {
 
     // Serve's contract is the server on 127.0.0.1 with tailscaled proxying to it, so `--host` together with serve would
     // bind the LAN while the panel claims the tailnet. The two are a contradiction, not one overriding the other.
-    if (options.access === "tailscale-serve" && options.host !== undefined) {
+    if (serveHostConflict({ access: options.access, host: options.host })) {
         fail(
             "--access tailscale-serve keeps the server on 127.0.0.1 and lets Tailscale reach it; drop --host, or pick another access mode.",
         );
@@ -1041,26 +1077,35 @@ async function main(): Promise<void> {
         }
 
         state.mode = mode;
-        // `custom` is `--host`'s own address, and only that turns a mode into `custom`; bindHost knows the rest.
-        state.host = mode === "custom" ? options.host! : bindHost(mode);
+        state.host = chosenHost({ mode, host: options.host });
 
         if (mode !== "custom") {
-            saveSettings(mode);
+            saveSettings(mode, options.port);
         }
 
-        // A run that was on `tailscale-serve` and died can leave its mount behind, and tailscaled keeps it: clear it
-        // before this run needs the port. Never for the serve mode itself (prepareServe() mounted or adopted it, and
-        // saved the choice first) and never in the way of the start: removeStaleServe() says a problem through the
-        // events and removes nothing rather than throwing.
-        if (mode !== "tailscale-serve" && settings.access === "tailscale-serve") {
+        // A mount tailscaled makes outlives the launcher that made it, and a run killed outright leaves one behind
+        // answering 502. Clear a `/` mount of ours before this run needs the port, whichever mode it starts in and
+        // however the last run ended: the alternative is a tailnet address still publishing a server the owner believes
+        // is on this machine alone. Never for `tailscale-serve` itself, whose mount prepareServe() made or adopted.
+        const stalePorts = staleServePorts(mode, settings.port, options.port);
+
+        if (stalePorts.length > 0) {
             const tailscale = findTailscale();
 
             if (tailscale !== undefined) {
-                const removed = removeStaleServe(tailscale, options.port, {
-                    problem(line) {
-                        log(yellow(`  tailscale: ${line}`));
-                    },
-                });
+                // Tailscale installed but never used is ordinary, so a failing probe is worth saying only when the last
+                // run was the serve mode, which is the one case where something of ours could be left behind.
+                const removed = removeStaleServe(
+                    tailscale,
+                    stalePorts,
+                    settings.access === "tailscale-serve"
+                        ? {
+                              problem(line) {
+                                  log(yellow(`  tailscale: ${line}`));
+                              },
+                          }
+                        : undefined,
+                );
 
                 if (removed) {
                     log(dim("  Removed the Tailscale Serve mount an earlier run left behind."));
